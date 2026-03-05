@@ -39,6 +39,9 @@ function initDatabase() {
       )
     `);
 
+    ensureUsersStatusUpdatedAtColumn();
+    normalizeUsersIdentityFields();
+
     // 用户配置表
     db.run(`
       CREATE TABLE IF NOT EXISTS user_configs (
@@ -60,16 +63,19 @@ function initDatabase() {
     db.run(`
       CREATE TABLE IF NOT EXISTS notification_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        asset TEXT,
-        mode TEXT,
+        user_id INTEGER NOT NULL,
+        asset TEXT NOT NULL,
+        mode TEXT NOT NULL,
         status TEXT DEFAULT 'pending',
         content TEXT,
+        html_content TEXT,
         sent_at DATETIME,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id)
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
+
+    ensureNotificationLogsHtmlContentColumn();
 
     // 金价缓存表
     db.run(`
@@ -98,6 +104,61 @@ function initDatabase() {
     // 创建默认管理员账户
     createDefaultAdmin();
   });
+}
+
+function ensureUsersStatusUpdatedAtColumn() {
+  db.all('PRAGMA table_info(users)', [], (err, rows) => {
+    if (err) {
+      console.error('Error checking users table schema:', err);
+      return;
+    }
+
+    const hasColumn = (rows || []).some((r) => r?.name === 'status_updated_at');
+    if (!hasColumn) {
+      db.run(
+        'ALTER TABLE users ADD COLUMN status_updated_at DATETIME',
+        (alterErr) => {
+          if (alterErr) {
+            console.error('Error adding status_updated_at column:', alterErr);
+            return;
+          }
+          db.run(
+            'UPDATE users SET status_updated_at = created_at WHERE status_updated_at IS NULL',
+            (updateErr) => {
+              if (updateErr) {
+                console.error('Error backfilling status_updated_at:', updateErr);
+              }
+            },
+          );
+        },
+      );
+      return;
+    }
+
+    db.run(
+      'UPDATE users SET status_updated_at = created_at WHERE status_updated_at IS NULL',
+      (updateErr) => {
+        if (updateErr) {
+          console.error('Error normalizing status_updated_at:', updateErr);
+        }
+      },
+    );
+  });
+}
+
+function normalizeUsersIdentityFields() {
+  db.run(
+    `UPDATE users
+     SET email = TRIM(email, char(9) || char(10) || char(13) || ' '),
+         user_id = TRIM(user_id, char(9) || char(10) || char(13) || ' ')
+     WHERE email != TRIM(email, char(9) || char(10) || char(13) || ' ')
+        OR user_id != TRIM(user_id, char(9) || char(10) || char(13) || ' ')`,
+    (err) => {
+      if (err) {
+        console.error('Error normalizing user identity fields:', err);
+      }
+    },
+  );
 }
 
 // 创建默认管理员
@@ -132,6 +193,18 @@ function createDefaultAdmin() {
 }
 
 // 数据库操作方法
+function ensureNotificationLogsHtmlContentColumn() {
+  db.all('PRAGMA table_info(notification_logs)', [], (err, rows) => {
+    if (err) return;
+    const hasColumn = (rows || []).some((r) => r?.name === 'html_content');
+    if (!hasColumn) {
+      db.run('ALTER TABLE notification_logs ADD COLUMN html_content TEXT', (e) => {
+        if (e) console.error('Error adding html_content column:', e);
+      });
+    }
+  });
+}
+
 const dbOperations = {
   // 用户相关
   createUser: (userData) => {
@@ -151,10 +224,17 @@ const dbOperations = {
 
   getUserByEmail: (email) => {
     return new Promise((resolve, reject) => {
-      db.get('SELECT * FROM users WHERE email = ?', [email], (err, row) => {
+      db.get(
+        `SELECT *
+         FROM users
+         WHERE LOWER(TRIM(email, char(9) || char(10) || char(13) || ' '))
+           = LOWER(TRIM(?, char(9) || char(10) || char(13) || ' '))`,
+        [email],
+        (err, row) => {
         if (err) reject(err);
         else resolve(row);
-      });
+        },
+      );
     });
   },
 
@@ -178,12 +258,22 @@ const dbOperations = {
 
   updateUser: (id, updates) => {
     return new Promise((resolve, reject) => {
-      const fields = Object.keys(updates).map(key => `${key} = ?`).join(', ');
-      const values = Object.values(updates);
+      const keys = Object.keys(updates || {});
+      if (!keys.length) {
+        resolve({ changes: 0 });
+        return;
+      }
+
+      const values = keys.map((k) => updates[k]);
+      const assignments = keys.map((key) => `${key} = ?`);
+      if (Object.prototype.hasOwnProperty.call(updates, 'status')) {
+        assignments.push('status_updated_at = CURRENT_TIMESTAMP');
+      }
+      assignments.push('updated_at = CURRENT_TIMESTAMP');
       values.push(id);
-      
+
       db.run(
-        `UPDATE users SET ${fields}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        `UPDATE users SET ${assignments.join(', ')} WHERE id = ?`,
         values,
         function(err) {
           if (err) reject(err);
@@ -253,16 +343,16 @@ const dbOperations = {
   },
 
   // 通知日志相关
-  createNotificationLog: (logData) => {
+  createNotificationLog: (log) => {
     return new Promise((resolve, reject) => {
-      const { user_id, asset, mode, status, content, sent_at } = logData;
+      const { user_id, asset, mode, status, content, html_content, sent_at } = log;
       db.run(
-        `INSERT INTO notification_logs (user_id, asset, mode, status, content, sent_at) 
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [user_id, asset, mode, status, content, sent_at],
+        `INSERT INTO notification_logs (user_id, asset, mode, status, content, html_content, sent_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [user_id, asset, mode, status, content, html_content || null, sent_at],
         function(err) {
           if (err) reject(err);
-          else resolve({ id: this.lastID, ...logData });
+          else resolve({ id: this.lastID, ...log });
         }
       );
     });
@@ -433,6 +523,33 @@ const dbOperations = {
       });
     });
   }
+  ,
+
+  expireOverdueActiveUsers: () => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        `UPDATE users
+         SET status = 'inactive',
+             status_updated_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE role != 'admin'
+           AND status = 'active'
+           AND status_updated_at <= datetime('now', '-30 days')`,
+        [],
+        function(err) {
+          if (err) {
+            if (String(err.message || '').includes('no such column: status_updated_at')) {
+              resolve({ skipped: true, changes: 0 });
+              return;
+            }
+            reject(err);
+          } else {
+            resolve({ changes: this.changes });
+          }
+        }
+      );
+    });
+  },
 };
 
 module.exports = { db, dbOperations };

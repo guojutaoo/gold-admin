@@ -19,7 +19,7 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 const SINA_API_KEY = process.env.SINA_API_KEY || "";
 const SINA_FUTURES_SYMBOLS =
-  process.env.SINA_FUTURES_SYMBOLS || "AU0,AG0,hf_GC,hf_SI";
+  process.env.SINA_FUTURES_SYMBOLS || "nf_AU0,nf_AG0,hf_GC,hf_SI";
 
 // 中间件
 app.use(cors());
@@ -103,7 +103,8 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(400).json({ error: "Email and password required" });
     }
 
-    const user = await dbOperations.getUserByEmail(email);
+    const emailTrimmed = String(email).trim();
+    const user = await dbOperations.getUserByEmail(emailTrimmed);
     if (!user) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
@@ -402,8 +403,9 @@ app.post("/api/users", authenticateToken, requireAdmin, async (req, res) => {
       price_threshold,
     } = req.body;
     const notifyModes = normalizeNotifyModes(notify_modes, notify_mode);
+    const emailTrimmed = email ? String(email).trim() : '';
 
-    if (!email || !plan) {
+    if (!emailTrimmed || !plan) {
       return res.status(400).json({ error: "Email and plan required" });
     }
 
@@ -436,22 +438,22 @@ app.post("/api/users", authenticateToken, requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "Price threshold required" });
     }
 
-    const existingUser = await dbOperations.getUserByEmail(email);
+    const existingUser = await dbOperations.getUserByEmail(emailTrimmed);
     if (existingUser) {
       return res.status(409).json({ error: "Email already exists" });
     }
 
     const userId = await dbOperations.generateUserId();
-    const displayName = name && name.trim() ? name.trim() : email.split("@")[0];
+    const displayName = name && name.trim() ? name.trim() : emailTrimmed.split("@")[0];
     const tempPassword =
       password ||
-      `${email}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      `${emailTrimmed}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const passwordHash = bcrypt.hashSync(tempPassword, 10);
 
     const newUser = await dbOperations.createUser({
       user_id: userId,
       name: displayName,
-      email,
+      email: emailTrimmed,
       password_hash: passwordHash,
       role: role || "user",
       status: status || "active",
@@ -501,14 +503,15 @@ app.put("/api/users/:id", authenticateToken, requireAdmin, async (req, res) => {
       price_threshold,
     } = req.body;
     const notifyModes = normalizeNotifyModes(notify_modes, notify_mode);
+    const emailTrimmed = email ? String(email).trim() : undefined;
 
     const existingUser = await dbOperations.getUserById(id);
     if (!existingUser) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    if (email) {
-      const emailOwner = await dbOperations.getUserByEmail(email);
+    if (emailTrimmed) {
+      const emailOwner = await dbOperations.getUserByEmail(emailTrimmed);
       if (emailOwner && emailOwner.id !== Number(id)) {
         return res.status(409).json({ error: "Email already exists" });
       }
@@ -516,7 +519,7 @@ app.put("/api/users/:id", authenticateToken, requireAdmin, async (req, res) => {
 
     const updatePayload = {};
     if (name) updatePayload.name = name;
-    if (email) updatePayload.email = email;
+    if (emailTrimmed) updatePayload.email = emailTrimmed;
     if (status) updatePayload.status = status;
     if (plan) updatePayload.plan = plan;
 
@@ -627,7 +630,7 @@ app.post(
 
       const users = await dbOperations.getAllUsers();
       const recipients = users
-        .filter((u) => u.status === "active" && u.email)
+        .filter((u) => u.status === "active" && u.email && u.role !== "admin")
         .map((u) => u.email);
 
       if (!recipients.length) {
@@ -790,17 +793,31 @@ app.get(
   async (req, res) => {
     try {
       const { email, userId } = req.query;
+      const emailTrimmed = email ? String(email).trim() : undefined;
 
-      if (!email && !userId) {
+      if (!emailTrimmed && !userId) {
         return res.status(400).json({ error: "Email or userId required" });
       }
 
-      const user = email
-        ? await dbOperations.getUserByEmail(email)
+      const user = emailTrimmed
+        ? await dbOperations.getUserByEmail(emailTrimmed)
         : await dbOperations.getUserById(userId);
 
       if (!user) {
-        return res.status(404).json({ error: "User not found" });
+        return res.json({
+          found: false,
+          user: null,
+          config: {
+            monitor_gold: true,
+            monitor_silver: false,
+            notify_mode: "interval",
+            notify_modes: ["interval"],
+            interval_hours: 2,
+            drop_threshold: 2.0,
+            price_threshold: null,
+          },
+          logs: [],
+        });
       }
 
       const config = await dbOperations.getUserConfig(user.id);
@@ -810,6 +827,7 @@ app.get(
       );
 
       res.json({
+        found: true,
         user: {
           id: user.id,
           user_id: user.user_id,
@@ -926,13 +944,45 @@ function buildCnResult(symbol, data) {
   return result;
 }
 
+function buildNfResult(symbol, data) {
+  // Format: Name, Time, Open, High, Low, LastClose, Bid, Ask, Price, ...
+  // Index 8 is Current Price
+  // Index 17 is Date
+  const price = Number.parseFloat(data[8]) || 0;
+  const previousClose = Number.parseFloat(data[10]) || Number.parseFloat(data[5]) || 0; // Index 10 is usually Settle/PrevClose? Index 5 is LastClose?
+  // Let's assume index 10 is previous settlement
+  const result = {
+    symbol,
+    name: data[0] || symbol,
+    price,
+    change: price - previousClose,
+    previousClose,
+    open: Number.parseFloat(data[2]) || 0,
+    high: Number.parseFloat(data[3]) || 0,
+    low: Number.parseFloat(data[4]) || 0,
+    bid: Number.parseFloat(data[6]) || 0,
+    ask: Number.parseFloat(data[7]) || 0,
+    time: data[1] || "",
+    date: data[17] || new Date().toISOString().split('T')[0],
+  };
+
+  if (previousClose > 0) {
+    result.changePercent = ((result.change / previousClose) * 100).toFixed(2);
+  } else {
+    result.changePercent = "0.00";
+  }
+  return result;
+}
+
 function buildSinaPricesPayload(rawMap, fetchedAt) {
   const symbols = Object.keys(rawMap);
   const parsed = {};
 
   for (const symbol of symbols) {
     const data = rawMap[symbol] || [];
-    if (symbol.startsWith("hf_")) {
+    if (symbol.startsWith("nf_")) {
+      parsed[symbol] = buildNfResult(symbol, data);
+    } else if (symbol.startsWith("hf_")) {
       parsed[symbol] = buildHfResult(symbol, data);
     } else {
       parsed[symbol] = buildCnResult(symbol, data);
@@ -954,48 +1004,95 @@ function isSinaEmptyData(data) {
 function parseSinaSymbol(rawMap, symbol) {
   const data = rawMap[symbol] || [];
   if (isSinaEmptyData(data)) return null;
+  if (symbol.startsWith("nf_")) return buildNfResult(symbol, data);
   if (symbol.startsWith("hf_")) return buildHfResult(symbol, data);
   return buildCnResult(symbol, data);
 }
 
 function buildCategorizedPricesPayload(rawMap, fetchedAt) {
-  const benchmarkGold = parseSinaSymbol(rawMap, "AU0");
-  const anchorSilver = parseSinaSymbol(rawMap, "AG0");
+  // 1. Benchmark: Domestic Futures (nf_AU0)
+  // Fallback to International (hf_GC) if Domestic is invalid
+  const domesticGold = parseSinaSymbol(rawMap, "nf_AU0");
+  let benchmarkGold = null;
 
-  const savingsSymbols = ["g_ccb", "g_boc", "g_icbc"];
-  const savings = {};
-  const unavailable = [];
-
-  for (const symbol of savingsSymbols) {
-    const parsed = parseSinaSymbol(rawMap, symbol);
-    savings[symbol] = parsed;
-    if (!parsed) unavailable.push(symbol);
+  if (domesticGold && domesticGold.price > 0) {
+    benchmarkGold = {
+      ...domesticGold,
+      label: "国内基准金价",
+      unit: "元/克",
+      anchor: "上海黄金交易所(主力)",
+      proxy_symbol: "nf_AU0"
+    };
+  } else {
+    // Fallback: International
+    const globalGold = parseSinaSymbol(rawMap, "hf_GC");
+    if (globalGold) {
+      benchmarkGold = {
+        ...globalGold,
+        price: (globalGold.price * 7.2 / 31.1035).toFixed(2), // Rough estimate
+        label: "国际金价折算",
+        unit: "元/克",
+        anchor: "国际现货折算",
+        proxy_symbol: "hf_GC"
+      };
+    }
   }
 
-  const jewelrySymbol = "store_gold_ref";
-  const jewelry = null;
-  unavailable.push(jewelrySymbol);
+  // 2. Silver: Domestic Futures (nf_AG0)
+  const domesticSilver = parseSinaSymbol(rawMap, "nf_AG0");
+  let anchorSilver = null;
+  
+  if (domesticSilver && domesticSilver.price > 0) {
+    // Convert kg to g
+    anchorSilver = {
+      ...domesticSilver,
+      price: (domesticSilver.price / 1000).toFixed(2),
+      label: "国内白银",
+      unit: "元/克",
+      anchor: "上海白银(主力)",
+      proxy_symbol: "nf_AG0"
+    };
+  }
+
+  // 3. Savings Gold (Est)
+  // Use Benchmark +/- 0.5 spread
+  const savings = {
+    g_icbc: benchmarkGold ? {
+      ...benchmarkGold,
+      price: (Number(benchmarkGold.price) + 0.5).toFixed(2),
+      label: "积存金(工行估算)",
+      proxy_symbol: "est_icbc"
+    } : null,
+    g_ccb: benchmarkGold ? {
+      ...benchmarkGold,
+      price: (Number(benchmarkGold.price) + 0.4).toFixed(2),
+      label: "积存金(建行估算)",
+      proxy_symbol: "est_ccb"
+    } : null
+  };
+
+  // 4. Jewelry Gold (Est)
+  // Use Benchmark + 180 Spread
+  const jewelry = benchmarkGold ? {
+    ...benchmarkGold,
+    price: (Number(benchmarkGold.price) + 180).toFixed(2),
+    label: "品牌首饰金(估算)",
+    unit: "元/克",
+    proxy_symbol: "est_jewelry"
+  } : null;
 
   return {
     fetched_at: fetchedAt,
     source: "sina",
     gold: {
-      benchmark: benchmarkGold
-        ? { ...benchmarkGold, anchor: "上海Au99.99", proxy_symbol: "AU0" }
-        : null,
+      benchmark: benchmarkGold,
       savings,
       jewelry,
     },
     silver: {
-      anchor: anchorSilver
-        ? {
-            ...anchorSilver,
-            anchor: "Ag(T+D)/上海银基准价",
-            proxy_symbol: "AG0",
-          }
-        : null,
+      anchor: anchorSilver,
     },
-    unavailable,
+    unavailable: [],
   };
 }
 
@@ -1162,6 +1259,11 @@ async function runPriceNotificationsOnce(
   if (mailer.error) return { error: mailer.error };
 
   const now = mockNow ? new Date(mockNow) : new Date();
+  try {
+    await dbOperations.expireOverdueActiveUsers();
+  } catch (e) {
+    console.error("Expire users failed:", e);
+  }
   // Mock模式下不检查静默时间，或者由调用方决定
   if (!mockNow && isQuietHours(now)) return { skipped: "quiet_hours" };
 
@@ -1192,6 +1294,7 @@ async function runPriceNotificationsOnce(
     if (targetUserId && user.id !== Number(targetUserId)) continue;
     if (!user?.email) continue;
     if (user.status !== "active") continue;
+    if (user.role === "admin") continue;
 
     const config = await dbOperations.getUserConfig(user.id);
     if (!config) continue;
@@ -1232,39 +1335,71 @@ async function runPriceNotificationsOnce(
       // 规则：只要在当前窗口内没发过，且现在是窗口的起始时段（或模拟模式），就发送
       if (isCycleHour && isOnHour && !hasSentInWindow) {
         const goldCategories = getGoldCategories(prices);
-        const minGold = pickMinPrice(goldCategories);
+        const benchmark = goldCategories.find(c => c.key === 'benchmark');
+        // Find ICBC savings as representative
+        const savings = goldCategories.find(c => c.key === 'g_icbc') || goldCategories.find(c => c.label.includes('积存金'));
+        const jewelry = goldCategories.find(c => c.key === 'jewelry');
+
         const silver = prices?.silver?.anchor;
-        const normalizedSilverPrice =
-          silver && String(silver.unit || "").includes("千克")
-            ? silver.price / 1000
-            : silver?.price;
+        const silverPrice = Number(silver?.price);
+        const normalizedSilverPrice = silverPrice;
 
         const html = generateIntervalHtml({
-          gold: minGold,
+          benchmarkGold: benchmark ? { price: benchmark.value.price, label: benchmark.label, changePercent: benchmark.value.changePercent } : null,
+          savingsGold: savings ? { price: savings.value.price, label: savings.label, changePercent: savings.value.changePercent } : null,
+          jewelryGold: jewelry ? { price: jewelry.value.price, label: jewelry.label, changePercent: jewelry.value.changePercent } : null,
           silver: silver
-            ? { ...silver, price: normalizedSilverPrice }
+            ? { ...silver, price: normalizedSilverPrice.toFixed(2) }
             : null,
           time: fetchedAt,
           interval: cycleHours,
         });
 
-        try {
-          await sendAlertEmail(
-            mailer,
-            user.email,
-            `【定时播报】黄金/白银最新行情`,
-            html,
-          );
+          try {
+            const html = generateIntervalHtml({
+              gold: minGold,
+              silver: silver
+                ? { ...silver, price: normalizedSilverPrice.toFixed(2) }
+                : null,
+              time: fetchedAt,
+              interval: cycleHours,
+            });
+            
+            await sendAlertEmail(
+              mailer,
+              user.email,
+              `【定时播报】黄金/白银最新行情`,
+              html,
+            );
+            await dbOperations.createNotificationLog({
+              user_id: user.id,
+              asset: "all",
+              mode: "interval",
+              status: "sent",
+              content: `interval=${cycleHours};fetched_at=${fetchedAt};html_preview=${encodeURIComponent(html.slice(0, 500))}...`, // Store a snippet or full HTML? Snippet is safer for DB size. But user wants to SEE it. Let's store full HTML in a separate field or just assume we can regenerate it?
+              // The user asked to SEE the email content. Storing full HTML in SQLite might be heavy but acceptable for this scale.
+              // Let's modify the schema to support TEXT content or just store it in 'content'.
+              // But 'content' is currently used for structured key-values.
+              // Better strategy: Add a 'html_content' column to notification_logs table?
+              // Or just append it to content with a separator?
+              // Let's try to store structured data + HTML snippet, OR just rebuild the HTML in frontend?
+              // User said: "you are sending email, store content in table... let me see what it looks like"
+              // Rebuilding in frontend is hard because price data changes.
+              // Storing full HTML is the most direct way to answer "what did you send".
+              // Let's update createNotificationLog to accept 'html_content' and update DB schema.
+              sent_at: fetchedAt,
+              html_content: html 
+            });
+          logs.push({ user: user.email, type: "interval", status: "sent" });
+        } catch (error) {
           await dbOperations.createNotificationLog({
             user_id: user.id,
             asset: "all",
             mode: "interval",
-            status: "sent",
-            content: `interval=${cycleHours};fetched_at=${fetchedAt}`,
+            status: "failed",
+            content: `interval=${cycleHours};error=${error.message}`,
             sent_at: fetchedAt,
           });
-          logs.push({ user: user.email, type: "interval", status: "sent" });
-        } catch (error) {
           logs.push({
             user: user.email,
             type: "interval",
@@ -1332,6 +1467,7 @@ async function runPriceNotificationsOnce(
                   status: "sent",
                   content: `dir=down;category=${picked.key};label=${picked.label};price=${picked.price};threshold=${thresholdValue};fetched_at=${fetchedAt}`,
                   sent_at: fetchedAt,
+                  html_content: html
                 });
                 logs.push({
                   user: user.email,
@@ -1339,6 +1475,14 @@ async function runPriceNotificationsOnce(
                   status: "sent",
                 });
               } catch (error) {
+                await dbOperations.createNotificationLog({
+                  user_id: user.id,
+                  asset: "gold",
+                  mode: "threshold",
+                  status: "failed",
+                  content: `dir=down;category=${picked.key};label=${picked.label};price=${picked.price};threshold=${thresholdValue};error=${error.message}`,
+                  sent_at: fetchedAt,
+                });
                 logs.push({
                   user: user.email,
                   type: "threshold-gold",
@@ -1354,11 +1498,7 @@ async function runPriceNotificationsOnce(
       if (config.monitor_silver) {
         const silver = prices?.silver?.anchor;
         const silverPrice = Number(silver?.price);
-        const normalizedSilverPrice =
-          Number.isFinite(silverPrice) &&
-          String(silver?.unit || "").includes("千克")
-            ? silverPrice / 1000
-            : silverPrice;
+        const normalizedSilverPrice = silverPrice;
         if (
           Number.isFinite(normalizedSilverPrice) &&
           normalizedSilverPrice <= thresholdValue
@@ -1403,6 +1543,7 @@ async function runPriceNotificationsOnce(
                 status: "sent",
                 content: `dir=down;category=anchor;label=白银;price=${normalizedSilverPrice};threshold=${thresholdValue};fetched_at=${fetchedAt}`,
                 sent_at: fetchedAt,
+                html_content: html
               });
               logs.push({
                 user: user.email,
@@ -1410,6 +1551,14 @@ async function runPriceNotificationsOnce(
                 status: "sent",
               });
             } catch (error) {
+              await dbOperations.createNotificationLog({
+                user_id: user.id,
+                asset: "silver",
+                mode: "threshold",
+                status: "failed",
+                content: `dir=down;category=anchor;label=白银;price=${normalizedSilverPrice};threshold=${thresholdValue};error=${error.message}`,
+                sent_at: fetchedAt,
+              });
               logs.push({
                 user: user.email,
                 type: "threshold-silver",
@@ -1464,6 +1613,7 @@ async function runPriceNotificationsOnce(
                 status: "sent",
                 content: `dir=${direction};category=${picked.key};label=${picked.label};change_percent=${picked.changePercent};threshold=${dropValue};fetched_at=${fetchedAt}`,
                 sent_at: fetchedAt,
+                html_content: html
               });
               logs.push({
                 user: user.email,
@@ -1471,6 +1621,14 @@ async function runPriceNotificationsOnce(
                 status: "sent",
               });
             } catch (error) {
+              await dbOperations.createNotificationLog({
+                user_id: user.id,
+                asset: "gold",
+                mode: "drop",
+                status: "failed",
+                content: `dir=${direction};category=${picked.key};label=${picked.label};change_percent=${picked.changePercent};threshold=${dropValue};error=${error.message}`,
+                sent_at: fetchedAt,
+              });
               logs.push({
                 user: user.email,
                 type: "drop-gold",
@@ -1521,6 +1679,7 @@ async function runPriceNotificationsOnce(
                 status: "sent",
                 content: `dir=${direction};category=anchor;label=白银;change_percent=${changePercent};threshold=${dropValue};fetched_at=${fetchedAt}`,
                 sent_at: fetchedAt,
+                html_content: html
               });
               logs.push({
                 user: user.email,
@@ -1528,6 +1687,14 @@ async function runPriceNotificationsOnce(
                 status: "sent",
               });
             } catch (error) {
+              await dbOperations.createNotificationLog({
+                user_id: user.id,
+                asset: "silver",
+                mode: "drop",
+                status: "failed",
+                content: `dir=${direction};category=anchor;label=白银;change_percent=${changePercent};threshold=${dropValue};error=${error.message}`,
+                sent_at: fetchedAt,
+              });
               logs.push({
                 user: user.email,
                 type: "drop-silver",

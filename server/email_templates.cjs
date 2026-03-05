@@ -23,6 +23,22 @@ const generateThresholdHtml = (data) => {
   const colorClass = direction === 'up' ? 'trend-up' : 'trend-down';
   const arrow = direction === 'up' ? '↑' : '↓';
   
+  const formatTime = (isoString) => {
+    try {
+      return new Date(isoString).toLocaleString('zh-CN', { 
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit', 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit',
+        timeZone: 'Asia/Shanghai'
+      });
+    } catch (e) {
+      return isoString;
+    }
+  };
+
   return `
     <!DOCTYPE html>
     <html>
@@ -51,7 +67,7 @@ const generateThresholdHtml = (data) => {
             </div>
             <div class="info-row">
               <span class="info-label">更新时间</span>
-              <span class="info-value">${time}</span>
+              <span class="info-value">${formatTime(time)}</span>
             </div>
           </div>
           
@@ -71,9 +87,25 @@ const generateThresholdHtml = (data) => {
 
 const generateDropHtml = (data) => {
   const { asset, label, price, changePercent, threshold, time, direction } = data;
-  const dirText = direction === 'up' ? '暴涨' : '暴跌';
+  const dirText = direction === 'up' ? '上涨' : '下跌';
   const colorClass = direction === 'up' ? 'trend-up' : 'trend-down';
   const arrow = direction === 'up' ? '↑' : '↓';
+
+  const formatTime = (isoString) => {
+    try {
+      return new Date(isoString).toLocaleString('zh-CN', { 
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit', 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit',
+        timeZone: 'Asia/Shanghai'
+      });
+    } catch (e) {
+      return isoString;
+    }
+  };
 
   return `
     <!DOCTYPE html>
@@ -103,7 +135,7 @@ const generateDropHtml = (data) => {
             </div>
             <div class="info-row">
               <span class="info-label">更新时间</span>
-              <span class="info-value">${time}</span>
+              <span class="info-value">${formatTime(time)}</span>
             </div>
           </div>
         </div>
@@ -117,35 +149,52 @@ const generateDropHtml = (data) => {
 };
 
 const generateIntervalHtml = (data) => {
-  const { gold, silver, time, interval } = data;
+  const { benchmarkGold, savingsGold, jewelryGold, silver, time, interval } = data;
   
-  let goldHtml = '';
-  if (gold) {
-    goldHtml = `
-      <div class="price-card">
-        <div class="label">黄金 (最低价品类)</div>
-        <div class="price-large">${gold.price} <span style="font-size:16px;">元/克</span></div>
+  const createCard = (title, price, label, changePercent = null, color = '#d4af37', border = '#d4af37') => {
+    let trendHtml = '';
+    if (changePercent !== null && changePercent !== undefined) {
+      const isUp = parseFloat(changePercent) >= 0;
+      const arrow = isUp ? '↑' : '↓';
+      const trendColor = isUp ? '#d9534f' : '#5cb85c';
+      trendHtml = `
         <div class="info-row">
-          <span class="info-label">品类</span>
-          <span class="info-value">${gold.label}</span>
+          <span class="info-label">较上封邮件</span>
+          <span class="info-value" style="color: ${trendColor}; font-weight: bold;">
+            ${changePercent}% ${arrow}
+          </span>
         </div>
-      </div>
-    `;
-  }
+      `;
+    }
 
-  let silverHtml = '';
-  if (silver) {
-    silverHtml = `
-      <div class="price-card" style="border-left-color: #bdc3c7;">
-        <div class="label">白银 (基准)</div>
-        <div class="price-large" style="color: #7f8c8d;">${silver.price} <span style="font-size:16px;">元/克</span></div>
-        <div class="info-row">
-          <span class="info-label">涨跌幅</span>
-          <span class="info-value">${silver.changePercent}%</span>
-        </div>
+    return `
+    <div class="price-card" style="border-left-color: ${border};">
+      <div class="label">${title}</div>
+      <div class="price-large" style="color: ${color};">${price} <span style="font-size:16px;">元/克</span></div>
+      <div class="info-row">
+        <span class="info-label">品类</span>
+        <span class="info-value">${label}</span>
       </div>
-    `;
-  }
+      ${trendHtml}
+    </div>
+  `;
+  };
+
+  const formatTime = (isoString) => {
+    try {
+      return new Date(isoString).toLocaleString('zh-CN', { 
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit', 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit',
+        timeZone: 'Asia/Shanghai'
+      });
+    } catch (e) {
+      return isoString;
+    }
+  };
 
   return `
     <!DOCTYPE html>
@@ -162,12 +211,30 @@ const generateIntervalHtml = (data) => {
         <div class="content">
           <p>根据您的设置，每 <strong>${interval}小时</strong> 为您推送最新行情。</p>
           
-          ${goldHtml}
-          ${silverHtml}
+          ${benchmarkGold ? createCard('黄金 (基准)', benchmarkGold.price, benchmarkGold.label, benchmarkGold.changePercent) : ''}
+          ${savingsGold ? createCard('积存金 (银行)', savingsGold.price, savingsGold.label, savingsGold.changePercent, '#b7950b', '#b7950b') : ''}
+          ${jewelryGold ? createCard('首饰金 (品牌)', jewelryGold.price, jewelryGold.label, jewelryGold.changePercent, '#d4af37', '#d4af37') : ''}
+          
+          ${silver ? `
+            <div class="price-card" style="border-left-color: #bdc3c7;">
+              <div class="label">白银</div>
+              <div class="price-large" style="color: #7f8c8d;">${silver.price} <span style="font-size:16px;">元/克</span></div>
+              <div class="info-row">
+                <span class="info-label">品类</span>
+                <span class="info-value">${silver.label || '国内白银'}</span>
+              </div>
+              <div class="info-row">
+                <span class="info-label">较上封邮件</span>
+                <span class="info-value" style="color: ${parseFloat(silver.changePercent) >= 0 ? '#d9534f' : '#5cb85c'}; font-weight: bold;">
+                  ${silver.changePercent}% ${parseFloat(silver.changePercent) >= 0 ? '↑' : '↓'}
+                </span>
+              </div>
+            </div>
+          ` : ''}
           
           <div class="info-row" style="margin-top: 20px;">
             <span class="info-label">更新时间</span>
-            <span class="info-value">${time}</span>
+            <span class="info-value">${formatTime(time)}</span>
           </div>
         </div>
         <div class="footer">

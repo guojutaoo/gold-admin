@@ -20,6 +20,7 @@ function UserConfig() {
   });
 
   const [logs, setLogs] = useState([]);
+  const [logsPage, setLogsPage] = useState(1);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -28,6 +29,7 @@ function UserConfig() {
   const [resultUser, setResultUser] = useState(null);
   const [resultConfig, setResultConfig] = useState(null);
   const [resultLogs, setResultLogs] = useState([]);
+  const [previewHtml, setPreviewHtml] = useState(null);
   const [searchError, setSearchError] = useState('');
   const [isSearching, setIsSearching] = useState(false);
 
@@ -68,6 +70,13 @@ function UserConfig() {
     loadData();
   }, [isAdmin]);
 
+  const logsPageSize = 10;
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil((logs?.length || 0) / logsPageSize));
+    setLogsPage((prev) => Math.min(Math.max(prev, 1), totalPages));
+  }, [logs, logsPageSize]);
+
   const formatNotifyMode = (mode) => {
     const modes = Array.isArray(mode)
       ? mode
@@ -95,6 +104,45 @@ function UserConfig() {
     return assets.length ? assets.join('、') : '无';
   };
 
+  const formatLogContent = (content) => {
+    if (!content) return '--';
+    const parts = content.split(';');
+    const map = {};
+    parts.forEach(p => {
+      const [k, v] = p.split('=');
+      if (k && v) map[k] = v;
+    });
+
+    if (map.error) {
+      return `⚠️ 发送失败: ${map.error}`;
+    }
+
+    // Interval: 【定时播报】黄金/白银最新行情
+    if (map.interval) {
+      return `【定时播报】黄金/白银最新行情 (间隔: ${map.interval}h)`;
+    }
+
+    // Threshold: 【黄金阈值提醒】已达到 580 元/克
+    if (map.threshold && map.price) {
+      const assetName = map.label || (map.category === 'anchor' ? '白银' : '黄金');
+      const dirText = map.dir === 'down' ? '下跌' : '上涨';
+      return `【${assetName}阈值提醒】${dirText}至 ${map.price}元/克 (阈值: ${map.threshold})`;
+    }
+
+    // Drop: 【黄金价格变动】积存金(工行) 下跌 2.5%
+    if (map.change_percent) {
+      const assetName = map.label || (map.category === 'anchor' ? '白银' : '黄金');
+      const dirText = map.dir === 'down' ? '下跌' : '上涨';
+      return `【${assetName}价格变动】${dirText} ${map.change_percent}% (阈值: ${map.threshold}%)`;
+    }
+    
+    // Fallback
+    const items = [];
+    if (map.dir) items.push(`方向: ${map.dir === 'up' ? '涨' : '跌'}`);
+    if (map.price) items.push(`价格: ${map.price}`);
+    return items.join(' | ') || content;
+  };
+
   const handleSearch = useCallback(async ({ email, userId } = {}) => {
     const targetEmail = email;
     if (!targetEmail && !userId) {
@@ -109,8 +157,15 @@ function UserConfig() {
         email: targetEmail || undefined,
         userId: userId || undefined,
       });
-      setResultUser(data.user);
-      setResultConfig(data.config);
+      if (data?.found === false) {
+        setResultUser(null);
+        setResultConfig(null);
+        setResultLogs([]);
+        setSearchError('用户不存在');
+        return;
+      }
+      setResultUser(data.user || null);
+      setResultConfig(data.config || null);
       setResultLogs(data.logs || []);
     } catch (error) {
       setSearchError(error.message);
@@ -188,8 +243,48 @@ function UserConfig() {
     );
   }
 
+  const formatTime = (isoString) => {
+    if (!isoString) return '--';
+    try {
+      return new Date(isoString).toLocaleString('zh-CN', { 
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit', 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit',
+        timeZone: 'Asia/Shanghai'
+      });
+    } catch {
+      return isoString;
+    }
+  };
+
+  const handleClosePreview = () => setPreviewHtml(null);
+
+  const logsTotalPages = Math.max(1, Math.ceil((logs?.length || 0) / logsPageSize));
+  const logsPageStart = (logsPage - 1) * logsPageSize;
+  const pagedLogs = logs.slice(logsPageStart, logsPageStart + logsPageSize);
+
   return (
     <div className="config-layout">
+      {previewHtml && (
+        <div className="preview-overlay" onClick={handleClosePreview}>
+          <div className="preview-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="preview-header">
+              <h3>邮件预览</h3>
+              <button className="close-btn" onClick={handleClosePreview}>×</button>
+            </div>
+            <div className="preview-content">
+              <iframe 
+                srcDoc={previewHtml} 
+                title="Email Preview"
+                style={{ width: '100%', height: '500px', border: 'none' }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
       {/* 侧边栏 */}
       <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <div className="sidebar-header">
@@ -378,15 +473,24 @@ function UserConfig() {
                 ) : (
                   resultLogs.slice(0, 20).map((log) => (
                     <div key={log.id} className="log-item">
+                      <div className="log-time">{formatTime(log.sent_at || log.created_at)}</div>
+                      <div className="log-recipient">{resultUser?.email}</div>
                       <div className="log-info">
-                        <span className="log-asset">{log.asset}</span>
-                        <span className="log-mode">{log.mode}</span>
-                      </div>
-                      <div className="log-meta">
-                        <span className={`log-status ${log.status}`}>
-                          {log.status === 'sent' ? '已发送' : '待发送'}
+                      <span className="log-asset">{log.asset}</span>
+                      <span className="log-mode">{log.mode}</span>
+                    </div>
+                    <div 
+                      className="log-content-detail clickable" 
+                      title="点击预览邮件"
+                      onClick={() => log.html_content && setPreviewHtml(log.html_content)}
+                    >
+                      {formatLogContent(log.content)}
+                      {log.html_content && <span className="preview-icon"> 👁️</span>}
+                    </div>
+                    <div className="log-meta">
+                      <span className={`log-status ${log.status}`}>
+                          {log.status === 'sent' ? '已发送' : '失败'}
                         </span>
-                        <span className="log-time">{log.sent_at || log.created_at}</span>
                       </div>
                     </div>
                   ))
@@ -559,19 +663,59 @@ function UserConfig() {
             <div className="dashboard-card logs-card">
               <div className="card-header">
                 <h3>📋 最近通知</h3>
+                {logs.length > 0 && (
+                  <div className="logs-pager">
+                    <button
+                      className="pager-btn"
+                      onClick={() => setLogsPage((p) => Math.max(1, p - 1))}
+                      disabled={logsPage <= 1}
+                      type="button"
+                    >
+                      上一页
+                    </button>
+                    <span className="pager-info">
+                      第 {logsPage}/{logsTotalPages} 页 · 共 {logs.length} 条
+                    </span>
+                    <button
+                      className="pager-btn"
+                      onClick={() =>
+                        setLogsPage((p) => Math.min(logsTotalPages, p + 1))
+                      }
+                      disabled={logsPage >= logsTotalPages}
+                      type="button"
+                    >
+                      下一页
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="logs-list">
-                {logs.slice(0, 5).map((log) => (
-                  <div key={log.id} className="log-item">
-                    <div className="log-info">
-                      <span className="log-asset">{log.asset}</span>
-                      <span className="log-mode">{log.mode}</span>
+                {logs.length > 0 && (
+                  <div className="notice-row notice-header">
+                    <div className="notice-cell notice-time">时间</div>
+                    <div className="notice-cell notice-mode">订阅类型</div>
+                    <div className="notice-cell notice-content">邮件内容</div>
+                    <div className="notice-cell notice-status">状态</div>
+                  </div>
+                )}
+                {pagedLogs.map((log) => (
+                  <div key={log.id} className="notice-row">
+                    <div className="notice-cell notice-time">{formatTime(log.sent_at || log.created_at)}</div>
+                    <div className="notice-cell notice-mode">
+                      {log.asset === 'gold' ? '黄金' : log.asset === 'silver' ? '白银' : '综合'}
                     </div>
-                    <div className="log-meta">
+                    <div
+                      className={`notice-cell notice-content ${log.html_content ? 'clickable' : ''}`}
+                      title={log.html_content ? '点击预览邮件' : log.content}
+                      onClick={() => log.html_content && setPreviewHtml(log.html_content)}
+                    >
+                      {formatLogContent(log.content)}
+                      {log.html_content && <span className="preview-icon"> 👁️</span>}
+                    </div>
+                    <div className="notice-cell notice-status">
                       <span className={`log-status ${log.status}`}>
-                        {log.status === 'sent' ? '已发送' : '待发送'}
+                        {log.status === 'sent' ? '已发送' : '失败'}
                       </span>
-                      <span className="log-time">{log.sent_at || log.created_at}</span>
                     </div>
                   </div>
                 ))}

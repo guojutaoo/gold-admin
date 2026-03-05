@@ -371,6 +371,33 @@
   font-size: 12px;
 }
 
+.logs-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pager-btn {
+  padding: 6px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pager-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pager-info {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* Data Table */
 .data-table {
   width: 100%;
@@ -618,12 +645,12 @@
 .chip {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: 6px;
+  padding: 6px 12px;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border-radius: 9999px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   color: #64748b;
   background: #fff;
   transition: all 0.2s;
@@ -644,8 +671,8 @@
 }
 
 .chip .check {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border: 2px solid currentColor;
   border-radius: 4px;
   display: flex;
@@ -674,12 +701,65 @@
   padding: 0 20px 20px;
 }
 
+.admin-notice-row {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.admin-notice-row.admin-notice-header {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  z-index: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.admin-notice-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-notice-content.clickable {
+  cursor: pointer;
+  color: #3b82f6;
+}
+
+.admin-notice-content.clickable:hover {
+  text-decoration: underline;
+}
+
+.preview-icon {
+  margin-left: 4px;
+}
+
+.admin-notice-status {
+  display: flex;
+}
+
 .log-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 12px 0;
   border-bottom: 1px solid #e2e8f0;
+}
+
+.log-item.log-header {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  z-index: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
 }
 
 .log-item:last-child {
@@ -928,7 +1008,23 @@
 }
 
 .admin-layout .chip {
-  border-radius: 6px;
+  border-radius: 9999px;
+}
+
+.data-table .chip {
+  display: inline-flex;
+  gap: 0;
+  padding: 4px 10px;
+  border-color: #dbeafe;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: default;
+}
+
+.data-table .chip + .chip {
+  margin-left: 6px;
 }
 
 .admin-layout .sidebar-footer {

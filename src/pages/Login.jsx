@@ -68,11 +68,6 @@ function Login() {
             {isLoading ? '登录中...' : '登录'}
           </button>
         </form>
-
-        <div className="login-hint">
-          <p>测试账号：</p>
-          <p>管理员：admin@gold.com / admin123</p>
-        </div>
       </div>
     </div>
   );

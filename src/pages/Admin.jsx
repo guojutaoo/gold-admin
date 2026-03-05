@@ -14,6 +14,8 @@ function Admin() {
 
   const [users, setUsers] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [logsPage, setLogsPage] = useState(1);
+  const logsPageSize = 10;
   const [stats, setStats] = useState({
     total: 0,
     active: 0,
@@ -39,6 +41,7 @@ function Admin() {
   const [broadcastSubject, setBroadcastSubject] = useState('');
   const [broadcastContent, setBroadcastContent] = useState('');
   const [isBroadcasting, setIsBroadcasting] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState(null);
 
   // 加载数据
   useEffect(() => {
@@ -48,6 +51,11 @@ function Admin() {
     }
     loadData();
   }, [isAdmin, navigate]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil((logs?.length || 0) / logsPageSize));
+    setLogsPage((prev) => Math.min(Math.max(prev, 1), totalPages));
+  }, [logs, logsPageSize]);
 
   const loadData = async () => {
     try {
@@ -285,9 +293,85 @@ function Admin() {
     );
   }
 
+  const logsTotalPages = Math.max(1, Math.ceil((logs?.length || 0) / logsPageSize));
+  const logsPageStart = (logsPage - 1) * logsPageSize;
+  const pagedLogs = logs.slice(logsPageStart, logsPageStart + logsPageSize);
+
+  const formatLogContent = (content) => {
+    if (!content) return '--';
+    const parts = content.split(';');
+    const map = {};
+    parts.forEach(p => {
+      const [k, v] = p.split('=');
+      if (k && v) map[k] = v;
+    });
+
+    if (map.error) {
+      return `⚠️ 发送失败: ${map.error}`;
+    }
+
+    if (map.interval) {
+      return `【定时播报】黄金/白银最新行情 (间隔: ${map.interval}h)`;
+    }
+
+    if (map.threshold && map.price) {
+      const assetName = map.label || (map.category === 'anchor' ? '白银' : '黄金');
+      const dirText = map.dir === 'down' ? '下跌' : '上涨';
+      return `【${assetName}阈值提醒】${dirText}至 ${map.price}元/克 (阈值: ${map.threshold})`;
+    }
+
+    if (map.change_percent) {
+      const assetName = map.label || (map.category === 'anchor' ? '白银' : '黄金');
+      const dirText = map.dir === 'down' ? '下跌' : '上涨';
+      return `【${assetName}价格变动】${dirText} ${map.change_percent}% (阈值: ${map.threshold}%)`;
+    }
+    
+    const items = [];
+    if (map.dir) items.push(`方向: ${map.dir === 'up' ? '涨' : '跌'}`);
+    if (map.price) items.push(`价格: ${map.price}`);
+    return items.join(' | ') || content;
+  };
+
+  const formatTime = (isoString) => {
+    if (!isoString) return '--';
+    try {
+      return new Date(isoString).toLocaleString('zh-CN', { 
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit', 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit',
+        timeZone: 'Asia/Shanghai'
+      });
+    } catch {
+      return isoString;
+    }
+  };
+
+  const handleClosePreview = () => setPreviewHtml(null);
+
   return (
     <div className="admin-layout">
       <Toaster position="top-center" />
+      
+      {previewHtml && (
+        <div className="preview-overlay" onClick={handleClosePreview}>
+          <div className="preview-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="preview-header">
+              <h3>邮件预览</h3>
+              <button className="close-btn" onClick={handleClosePreview}>×</button>
+            </div>
+            <div className="preview-content">
+              <iframe 
+                srcDoc={previewHtml} 
+                title="Email Preview"
+                style={{ width: '100%', height: '100%', border: 'none' }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 侧边栏 */}
       <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
@@ -493,9 +577,29 @@ function Admin() {
         <div className="panel">
           <div className="panel-header">
             <h3>最近通知</h3>
-            <span className="link-btn">
-              最近5条记录
-            </span>
+            {logs.length > 0 && (
+              <div className="logs-pager">
+                <button
+                  className="pager-btn"
+                  onClick={() => setLogsPage((p) => Math.max(1, p - 1))}
+                  disabled={logsPage <= 1}
+                  type="button"
+                >
+                  上一页
+                </button>
+                <span className="pager-info">
+                  第 {logsPage}/{logsTotalPages} 页 · 共 {logs.length} 条
+                </span>
+                <button
+                  className="pager-btn"
+                  onClick={() => setLogsPage((p) => Math.min(logsTotalPages, p + 1))}
+                  disabled={logsPage >= logsTotalPages}
+                  type="button"
+                >
+                  下一页
+                </button>
+              </div>
+            )}
           </div>
           <div className="logs-list">
             {logs.length === 0 ? (
@@ -504,23 +608,47 @@ function Admin() {
                 <span>暂无通知记录</span>
               </div>
             ) : (
-              logs.slice(0, 5).map((log) => (
-                <div key={log.id} className="log-item">
-                  <div className="log-info">
-                    <span className="log-user">{log.user_name || log.user_id}</span>
-                    <span className="log-asset">{log.asset}</span>
-                    <span className="log-mode">{log.mode}</span>
-                  </div>
-                  <div className="log-meta">
-                    <span className={`log-status ${log.status}`}>
-                      {log.status === 'sent' ? '已发送' : '待发送'}
-                    </span>
-                    <span className="log-time">
-                      {log.sent_at || log.created_at}
-                    </span>
-                  </div>
+              <>
+                <div className="admin-notice-row admin-notice-header">
+                  <div className="admin-notice-cell admin-notice-user">用户</div>
+                  <div className="admin-notice-cell admin-notice-asset">资产</div>
+                  <div className="admin-notice-cell admin-notice-mode">类型</div>
+                  <div className="admin-notice-cell admin-notice-content">邮件内容</div>
+                  <div className="admin-notice-cell admin-notice-status">状态</div>
+                  <div className="admin-notice-cell admin-notice-time">时间</div>
                 </div>
-              ))
+                {pagedLogs.map((log) => (
+                  <div key={log.id} className="admin-notice-row">
+                    <div className="admin-notice-cell admin-notice-user">
+                      {log.user_name || log.user_id}
+                    </div>
+                    <div className="admin-notice-cell admin-notice-asset">
+                      {log.asset === 'gold' ? '黄金' : log.asset === 'silver' ? '白银' : log.asset === 'all' ? '黄金/白银' : log.asset}
+                    </div>
+                    <div className="admin-notice-cell admin-notice-mode">{log.mode}</div>
+                    <div
+                      className="admin-notice-cell admin-notice-content clickable"
+                      title={log.html_content ? '点击预览邮件' : log.content}
+                      onClick={() => log.html_content && setPreviewHtml(log.html_content)}
+                    >
+                      {formatLogContent(log.content)}
+                      {log.html_content && <span className="preview-icon"> 👁️</span>}
+                    </div>
+                    <div className="admin-notice-cell admin-notice-status">
+                      <span className={`log-status ${log.status}`}>
+                        {log.status === 'sent'
+                          ? '已发送'
+                          : log.status === 'pending'
+                          ? '待发送'
+                          : '失败'}
+                      </span>
+                    </div>
+                    <div className="admin-notice-cell admin-notice-time">
+                      {formatTime(log.sent_at || log.created_at)}
+                    </div>
+                  </div>
+                ))}
+              </>
             )}
           </div>
         </div>
