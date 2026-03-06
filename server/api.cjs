@@ -25,6 +25,14 @@ const SINA_FUTURES_SYMBOLS =
 app.use(cors());
 app.use(express.json());
 
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    time: new Date().toISOString(),
+    uptime_seconds: Math.floor(process.uptime()),
+  });
+});
+
 // JWT 验证中间件
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
@@ -1355,41 +1363,22 @@ async function runPriceNotificationsOnce(
           interval: cycleHours,
         });
 
-          try {
-            const html = generateIntervalHtml({
-              gold: minGold,
-              silver: silver
-                ? { ...silver, price: normalizedSilverPrice.toFixed(2) }
-                : null,
-              time: fetchedAt,
-              interval: cycleHours,
-            });
-            
-            await sendAlertEmail(
-              mailer,
-              user.email,
-              `【定时播报】黄金/白银最新行情`,
-              html,
-            );
-            await dbOperations.createNotificationLog({
-              user_id: user.id,
-              asset: "all",
-              mode: "interval",
-              status: "sent",
-              content: `interval=${cycleHours};fetched_at=${fetchedAt};html_preview=${encodeURIComponent(html.slice(0, 500))}...`, // Store a snippet or full HTML? Snippet is safer for DB size. But user wants to SEE it. Let's store full HTML in a separate field or just assume we can regenerate it?
-              // The user asked to SEE the email content. Storing full HTML in SQLite might be heavy but acceptable for this scale.
-              // Let's modify the schema to support TEXT content or just store it in 'content'.
-              // But 'content' is currently used for structured key-values.
-              // Better strategy: Add a 'html_content' column to notification_logs table?
-              // Or just append it to content with a separator?
-              // Let's try to store structured data + HTML snippet, OR just rebuild the HTML in frontend?
-              // User said: "you are sending email, store content in table... let me see what it looks like"
-              // Rebuilding in frontend is hard because price data changes.
-              // Storing full HTML is the most direct way to answer "what did you send".
-              // Let's update createNotificationLog to accept 'html_content' and update DB schema.
-              sent_at: fetchedAt,
-              html_content: html 
-            });
+        try {
+          await sendAlertEmail(
+            mailer,
+            user.email,
+            `【定时播报】黄金/白银最新行情`,
+            html,
+          );
+          await dbOperations.createNotificationLog({
+            user_id: user.id,
+            asset: "all",
+            mode: "interval",
+            status: "sent",
+            content: `interval=${cycleHours};fetched_at=${fetchedAt};html_preview=${encodeURIComponent(html.slice(0, 500))}...`,
+            sent_at: fetchedAt,
+            html_content: html 
+          });
           logs.push({ user: user.email, type: "interval", status: "sent" });
         } catch (error) {
           await dbOperations.createNotificationLog({
