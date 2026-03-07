@@ -253,7 +253,7 @@ function UserForm() {
                   onChange={() => handleAssetChange('gold')}
                 />
                 <span className="check-icon">✓</span>
-                <span className="checkbox-text">黄金（积存金、基准金价和首饰金）</span>
+                <span className="checkbox-text">黄金（实物黄金、基准金价）</span>
               </label>
               <label className={`custom-checkbox ${formData.monitorAssets.silver ? 'checked' : ''}`}>
                 <input

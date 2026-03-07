@@ -212,8 +212,7 @@ const generateIntervalHtml = (data) => {
           <p>根据您的设置，每 <strong>${interval}小时</strong> 为您推送最新行情。</p>
           
           ${benchmarkGold ? createCard('黄金 (基准)', benchmarkGold.price, benchmarkGold.label, benchmarkGold.changePercent) : ''}
-          ${savingsGold ? createCard('积存金 (银行)', savingsGold.price, savingsGold.label, savingsGold.changePercent, '#b7950b', '#b7950b') : ''}
-          ${jewelryGold ? createCard('首饰金 (品牌)', jewelryGold.price, jewelryGold.label, jewelryGold.changePercent, '#d4af37', '#d4af37') : ''}
+          ${jewelryGold ? createCard('实物黄金 (Au99.99)', jewelryGold.price, jewelryGold.label, jewelryGold.changePercent, '#d4af37', '#d4af37') : ''}
           
           ${silver ? `
             <div class="price-card" style="border-left-color: #bdc3c7;">

@@ -19,7 +19,8 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 const SINA_API_KEY = process.env.SINA_API_KEY || "";
 const SINA_FUTURES_SYMBOLS =
-  process.env.SINA_FUTURES_SYMBOLS || "nf_AU0,nf_AG0,hf_GC,hf_SI";
+  process.env.SINA_FUTURES_SYMBOLS ||
+  "nf_AU0,nf_AG0,hf_GC,hf_SI,g_icbc,g_ccb,g_boc,sh518880,hf_XAU,hf_XAG";
 
 // 中间件
 app.use(cors());
@@ -1019,21 +1020,21 @@ function parseSinaSymbol(rawMap, symbol) {
 
 function buildCategorizedPricesPayload(rawMap, fetchedAt) {
   // 1. Benchmark: Domestic Futures (nf_AU0)
-  // Fallback to International (hf_GC) if Domestic is invalid
+  // Fallback to International (hf_GC or hf_XAU)
   const domesticGold = parseSinaSymbol(rawMap, "nf_AU0");
   let benchmarkGold = null;
 
   if (domesticGold && domesticGold.price > 0) {
     benchmarkGold = {
       ...domesticGold,
-      label: "国内基准金价",
+      label: "国内基准(期货)",
       unit: "元/克",
       anchor: "上海黄金交易所(主力)",
       proxy_symbol: "nf_AU0"
     };
   } else {
     // Fallback: International
-    const globalGold = parseSinaSymbol(rawMap, "hf_GC");
+    const globalGold = parseSinaSymbol(rawMap, "hf_GC") || parseSinaSymbol(rawMap, "hf_XAU");
     if (globalGold) {
       benchmarkGold = {
         ...globalGold,
@@ -1041,7 +1042,7 @@ function buildCategorizedPricesPayload(rawMap, fetchedAt) {
         label: "国际金价折算",
         unit: "元/克",
         anchor: "国际现货折算",
-        proxy_symbol: "hf_GC"
+        proxy_symbol: globalGold.symbol
       };
     }
   }
@@ -1060,34 +1061,56 @@ function buildCategorizedPricesPayload(rawMap, fetchedAt) {
       anchor: "上海白银(主力)",
       proxy_symbol: "nf_AG0"
     };
+  } else {
+      // Fallback: International Silver
+      const globalSilver = parseSinaSymbol(rawMap, "hf_SI") || parseSinaSymbol(rawMap, "hf_XAG");
+      if (globalSilver) {
+        anchorSilver = {
+          ...globalSilver,
+          price: (globalSilver.price * 7.2 / 31.1035).toFixed(2),
+          label: "国际白银折算",
+          unit: "元/克",
+          anchor: "国际现货折算",
+          proxy_symbol: globalSilver.symbol
+        };
+      }
   }
 
-  // 3. Savings Gold (Est)
-  // Use Benchmark +/- 0.5 spread
-  const savings = {
-    g_icbc: benchmarkGold ? {
-      ...benchmarkGold,
-      price: (Number(benchmarkGold.price) + 0.5).toFixed(2),
-      label: "积存金(工行估算)",
-      proxy_symbol: "est_icbc"
-    } : null,
-    g_ccb: benchmarkGold ? {
-      ...benchmarkGold,
-      price: (Number(benchmarkGold.price) + 0.4).toFixed(2),
-      label: "积存金(建行估算)",
-      proxy_symbol: "est_ccb"
-    } : null
-  };
+  // 3. Savings Gold (Disabled)
+  const savings = {};
+  
+  // Try to parse g_icbc, fallback to g_ccb, then g_boc
+  /*
+  const icbc = parseSinaSymbol(rawMap, "g_icbc");
+  const ccb = parseSinaSymbol(rawMap, "g_ccb");
+  const boc = parseSinaSymbol(rawMap, "g_boc");
 
-  // 4. Jewelry Gold (Est)
-  // Use Benchmark + 180 Spread
-  const jewelry = benchmarkGold ? {
-    ...benchmarkGold,
-    price: (Number(benchmarkGold.price) + 180).toFixed(2),
-    label: "品牌首饰金(估算)",
-    unit: "元/克",
-    proxy_symbol: "est_jewelry"
-  } : null;
+  if (icbc && icbc.price > 0) {
+    savings.g_icbc = { ...icbc, label: "积存金(工行)", unit: "元/克", anchor: "工行API" };
+  } else if (ccb && ccb.price > 0) {
+    savings.g_ccb = { ...ccb, label: "积存金(建行)", unit: "元/克", anchor: "建行API" };
+  } else if (boc && boc.price > 0) {
+    savings.g_boc = { ...boc, label: "积存金(中行)", unit: "元/克", anchor: "中行API" };
+  }
+  */
+
+  // 4. Physical Gold (Au99.99)
+  // Since direct Au99.99 symbol is often empty, we use Huaan Gold ETF (sh518880) as a proxy for physical gold price.
+  // sh518880 tracks Au99.99 closely, unit price is usually ~1/100 of 1g gold.
+  const huaanEtf = parseSinaSymbol(rawMap, "sh518880");
+  let jewelry = null;
+  
+  if (huaanEtf && huaanEtf.price > 0) {
+    jewelry = {
+      ...huaanEtf,
+      price: (huaanEtf.price * 100).toFixed(2), // Convert to per gram
+      changePercent: huaanEtf.changePercent,
+      label: "实物黄金(Au99.99)",
+      unit: "元/克",
+      anchor: "华安黄金ETF(sh518880)",
+      proxy_symbol: "sh518880"
+    };
+  }
 
   return {
     fetched_at: fetchedAt,
@@ -1147,9 +1170,7 @@ function fetchSinaFuturesQuotes(symbols) {
 app.get("/api/gold-prices", async (req, res) => {
   try {
     const fetchedAt = new Date().toISOString();
-    const responseText = await fetchSinaFuturesQuotes(
-      `${SINA_FUTURES_SYMBOLS},g_ccb,g_boc,g_icbc`,
-    );
+    const responseText = await fetchSinaFuturesQuotes(SINA_FUTURES_SYMBOLS);
     const rawMap = parseSinaVarResponse(responseText);
     const payload = buildCategorizedPricesPayload(rawMap, fetchedAt);
     await dbOperations.savePriceCache("sina", "all", payload);
@@ -1186,6 +1207,8 @@ function getGoldCategories(prices) {
     g_ccb: "积存金(建行)",
     g_boc: "积存金(中行)",
     g_icbc: "积存金(工行)",
+    g_chowtaifook: "周大福(首饰金)",
+    sh518880: "实物黄金(Au99.99)"
   };
 
   const savingsMap = prices?.gold?.savings || {};
@@ -1202,7 +1225,7 @@ function getGoldCategories(prices) {
   if (prices?.gold?.jewelry) {
     categories.push({
       key: "jewelry",
-      label: "首饰金",
+      label: prices.gold.jewelry.label || "实物黄金(Au99.99)",
       value: prices.gold.jewelry,
     });
   }
@@ -1273,7 +1296,16 @@ async function runPriceNotificationsOnce(
     console.error("Expire users failed:", e);
   }
   // Mock模式下不检查静默时间，或者由调用方决定
-  if (!mockNow && isQuietHours(now)) return { skipped: "quiet_hours" };
+  if (!mockNow) {
+    if (isQuietHours(now)) return { skipped: "quiet_hours" };
+    
+    // Check for Weekend (Saturday=6, Sunday=0)
+    const dayOfWeek = now.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      console.log(`Skipping notifications: Weekend (Day ${dayOfWeek})`);
+      return { skipped: "weekend" };
+    }
+  }
 
   const nowMs = now.getTime();
   const fetchedAt = now.toISOString();
@@ -1283,9 +1315,7 @@ async function runPriceNotificationsOnce(
     prices = mockPrices;
   } else {
     try {
-      const responseText = await fetchSinaFuturesQuotes(
-        `${SINA_FUTURES_SYMBOLS},g_ccb,g_boc,g_icbc`,
-      );
+      const responseText = await fetchSinaFuturesQuotes(SINA_FUTURES_SYMBOLS);
       const rawMap = parseSinaVarResponse(responseText);
       prices = buildCategorizedPricesPayload(rawMap, fetchedAt);
       await dbOperations.savePriceCache("sina", "all", prices);
@@ -1344,8 +1374,8 @@ async function runPriceNotificationsOnce(
       if (isCycleHour && isOnHour && !hasSentInWindow) {
         const goldCategories = getGoldCategories(prices);
         const benchmark = goldCategories.find(c => c.key === 'benchmark');
-        // Find ICBC savings as representative
-        const savings = goldCategories.find(c => c.key === 'g_icbc') || goldCategories.find(c => c.label.includes('积存金'));
+        // Savings Gold removed
+        const savings = null; 
         const jewelry = goldCategories.find(c => c.key === 'jewelry');
 
         const silver = prices?.silver?.anchor;
